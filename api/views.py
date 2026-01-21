@@ -8,6 +8,7 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 
 from .sdk import PaymentVerificationSDK
+from .telebirr_verifier import fetch_telebirr_receipt
 
 
 def _make_serializable(value):
@@ -175,3 +176,126 @@ def verify_telebirr_payment_by_reference(request, reference_number):
     )
     status_code = status.HTTP_200_OK if result.get('verified') else status.HTTP_400_BAD_REQUEST
     return Response(_make_serializable(result), status=status_code)
+
+
+@swagger_auto_schema(
+    method='post',
+    operation_description='Fetch raw HTML receipt from Telebirr API without parsing.',
+    request_body=openapi.Schema(
+        type=openapi.TYPE_OBJECT,
+        required=['reference_number'],
+        properties={
+            'reference_number': openapi.Schema(
+                type=openapi.TYPE_STRING,
+                description='Transaction reference number from Telebirr (e.g., CLS5C9Y98X)',
+                example='CLS5C9Y98X'
+            ),
+        }
+    ),
+    responses={
+        200: openapi.Response(
+            description='Raw HTML receipt fetched successfully',
+            schema=openapi.Schema(
+                type=openapi.TYPE_OBJECT,
+                properties={
+                    'html': openapi.Schema(
+                        type=openapi.TYPE_STRING,
+                        description='Raw HTML content from Telebirr receipt'
+                    ),
+                    'reference_number': openapi.Schema(
+                        type=openapi.TYPE_STRING,
+                        description='Reference number used for the request'
+                    ),
+                }
+            )
+        ),
+        400: openapi.Response(
+            description='Failed to fetch receipt',
+            schema=openapi.Schema(
+                type=openapi.TYPE_OBJECT,
+                properties={
+                    'error': openapi.Schema(type=openapi.TYPE_STRING),
+                }
+            )
+        ),
+    },
+    tags=['Payment Verification']
+)
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def fetch_telebirr_receipt_html(request):
+    """POST endpoint to fetch raw HTML receipt from Telebirr API."""
+    reference_number = request.data.get('reference_number')
+    if not reference_number:
+        return Response({'error': 'reference_number is required'}, status=status.HTTP_400_BAD_REQUEST)
+    
+    html_content = fetch_telebirr_receipt(reference_number)
+    if not html_content:
+        return Response(
+            {'error': 'Failed to fetch receipt from telebirr API', 'reference_number': reference_number},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+    
+    return Response({
+        'html': html_content,
+        'reference_number': reference_number
+    }, status=status.HTTP_200_OK)
+
+
+@swagger_auto_schema(
+    method='get',
+    operation_description='Fetch raw HTML receipt from Telebirr API without parsing using GET request.',
+    manual_parameters=[
+        openapi.Parameter(
+            'reference_number',
+            openapi.IN_PATH,
+            description='Transaction reference number from Telebirr (e.g., CLS5C9Y98X)',
+            type=openapi.TYPE_STRING,
+            required=True,
+            example='CLS5C9Y98X'
+        ),
+    ],
+    responses={
+        200: openapi.Response(
+            description='Raw HTML receipt fetched successfully',
+            schema=openapi.Schema(
+                type=openapi.TYPE_OBJECT,
+                properties={
+                    'html': openapi.Schema(
+                        type=openapi.TYPE_STRING,
+                        description='Raw HTML content from Telebirr receipt'
+                    ),
+                    'reference_number': openapi.Schema(
+                        type=openapi.TYPE_STRING,
+                        description='Reference number used for the request'
+                    ),
+                }
+            )
+        ),
+        400: openapi.Response(
+            description='Failed to fetch receipt',
+            schema=openapi.Schema(
+                type=openapi.TYPE_OBJECT,
+                properties={
+                    'error': openapi.Schema(type=openapi.TYPE_STRING),
+                }
+            )
+        ),
+    },
+    tags=['Payment Verification']
+)
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def fetch_telebirr_receipt_html_by_reference(request, reference_number):
+    """GET endpoint to fetch raw HTML receipt from Telebirr API."""
+    html_content = fetch_telebirr_receipt(reference_number)
+    if not html_content:
+        return Response(
+            {'error': 'Failed to fetch receipt from telebirr API', 'reference_number': reference_number},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+    
+    return Response({
+        'html': html_content,
+        'reference_number': reference_number
+    }, status=status.HTTP_200_OK)

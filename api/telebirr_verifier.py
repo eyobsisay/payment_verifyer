@@ -98,8 +98,25 @@ def parse_telebirr_receipt(html_content: str) -> Dict:
 def fetch_telebirr_receipt(reference_number: str) -> Optional[str]:
     """Fetch telebirr receipt HTML from Ethio Telecom API."""
     url = f"https://transactioninfo.ethiotelecom.et/receipt/{reference_number}"
+    
+    # Browser-like headers to avoid blocking
+    headers = {
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+        'Accept-Encoding': 'gzip, deflate, br, zstd',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Cache-Control': 'max-age=0',
+        'Connection': 'keep-alive',
+        'Host': 'transactioninfo.ethiotelecom.et',
+        'Sec-Fetch-Dest': 'document',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Site': 'none',
+        'Sec-Fetch-User': '?1',
+        'Upgrade-Insecure-Requests': '1',
+        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Mobile/15E148 Safari/604.1'
+    }
+    
     try:
-        response = requests.get(url, timeout=100)
+        response = requests.get(url, headers=headers, timeout=100)
         response.raise_for_status()
         return response.text
     except requests.exceptions.RequestException as e:
