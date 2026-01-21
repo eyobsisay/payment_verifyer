@@ -19,30 +19,59 @@ import os
 
 # Configure logger to write to payment.log file
 logger = logging.getLogger('payment_verifyer')
-logger.setLevel(logging.DEBUG)
 
-# Create logs directory if it doesn't exist
-log_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'logs')
-os.makedirs(log_dir, exist_ok=True)
-
-# File handler for payment.log
-log_file = os.path.join(log_dir, 'payment.log')
-file_handler = logging.FileHandler(log_file)
-file_handler.setLevel(logging.DEBUG)
-
-# Console handler (optional - for development)
-console_handler = logging.StreamHandler()
-console_handler.setLevel(logging.INFO)
-
-# Formatter
-formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-file_handler.setFormatter(formatter)
-console_handler.setFormatter(formatter)
-
-# Add handlers to logger (only if not already added)
+# Only configure if not already configured
 if not logger.handlers:
-    logger.addHandler(file_handler)
-    logger.addHandler(console_handler)
+    logger.setLevel(logging.DEBUG)
+    
+    # Get the project root directory (payment_verifyer folder)
+    # __file__ is: payment_verifyer/api/telebirr_verifier.py
+    # We want: payment_verifyer/logs/payment.log
+    current_file = os.path.abspath(__file__)  # Full path to telebirr_verifier.py
+    api_dir = os.path.dirname(current_file)  # payment_verifyer/api
+    project_root = os.path.dirname(api_dir)  # payment_verifyer (project root)
+    log_dir = os.path.join(project_root, 'logs')
+    
+    # Create logs directory if it doesn't exist
+    try:
+        os.makedirs(log_dir, exist_ok=True)
+    except Exception as e:
+        print(f"Warning: Could not create logs directory {log_dir}: {e}")
+        log_dir = current_dir  # Fallback to current directory
+    
+    # File handler for payment.log
+    log_file = os.path.join(log_dir, 'payment.log')
+    try:
+        file_handler = logging.FileHandler(log_file, mode='a', encoding='utf-8')
+        file_handler.setLevel(logging.DEBUG)
+        
+        # Console handler (optional - for development)
+        console_handler = logging.StreamHandler()
+        console_handler.setLevel(logging.INFO)
+        
+        # Formatter
+        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        file_handler.setFormatter(formatter)
+        console_handler.setFormatter(formatter)
+        
+        # Add handlers to logger
+        logger.addHandler(file_handler)
+        logger.addHandler(console_handler)
+        
+        # Prevent propagation to root logger
+        logger.propagate = False
+        
+        # Test log to verify file creation
+        logger.debug(f"Logger initialized. Log file: {log_file}")
+    except Exception as e:
+        print(f"Error setting up file handler for {log_file}: {e}")
+        # Fallback to console only
+        console_handler = logging.StreamHandler()
+        console_handler.setLevel(logging.INFO)
+        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        console_handler.setFormatter(formatter)
+        logger.addHandler(console_handler)
+        logger.warning(f"Could not create log file, using console only: {e}")
 
 
 def parse_telebirr_receipt(html_content: str) -> Dict:
@@ -132,6 +161,9 @@ def fetch_telebirr_receipt(reference_number: str) -> Optional[str]:
     """Fetch telebirr receipt HTML from Ethio Telecom API."""
     url = f"https://transactioninfo.ethiotelecom.et/receipt/{reference_number}"
     
+    logger.info(f"Starting fetch_telebirr_receipt for reference_number: {reference_number}")
+    logger.debug(f"Target URL: {url}")
+    
     # Browser-like headers - matching EXACT working browser request (Chrome on Windows)
     # Order matters - matching browser header order as closely as possible
     headers = {
@@ -153,13 +185,17 @@ def fetch_telebirr_receipt(reference_number: str) -> Optional[str]:
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36'
     }
     
+    logger.debug(f"Request headers configured: {list(headers.keys())}")
+    
     # Create a session to maintain cookies and connection
+    logger.debug("Creating requests session")
     session = requests.Session()
     
     # Disable SSL verification warnings (optional, but helps with some servers)
     urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
     
     # Configure retry strategy
+    logger.debug("Configuring retry strategy: total=2, backoff_factor=0.5")
     retry_strategy = Retry(
         total=2,
         backoff_factor=0.5,
@@ -171,6 +207,7 @@ def fetch_telebirr_receipt(reference_number: str) -> Optional[str]:
     adapter = HTTPAdapter(max_retries=retry_strategy, pool_connections=10, pool_maxsize=10)
     session.mount("https://", adapter)
     session.mount("http://", adapter)
+    logger.debug("HTTP adapter mounted to session")
     
     # Set cookies separately (requests library handles Cookie header automatically)
     cookies = {
@@ -178,6 +215,7 @@ def fetch_telebirr_receipt(reference_number: str) -> Optional[str]:
         '_ga_FPL0B27EZN': 'GS2.1.s1768474306$o1$g0$t1768474310$j56$l0$h0',
         '_ga_X7ZZ4B8L6Q': 'GS2.1.s1768474307$o1$g0$t1768474310$j57$l0$h297025115'
     }
+    logger.debug(f"Cookies configured: {list(cookies.keys())}")
     
     try:
         # First request - get the receipt and ETag
@@ -185,6 +223,12 @@ def fetch_telebirr_receipt(reference_number: str) -> Optional[str]:
         receipt_headers = headers.copy()
         receipt_headers.pop('Cookie', None)  # Remove Cookie from headers, use cookies parameter instead
         
+        logger.info(f"Making GET request to {url}")
+        logger.debug(f"Request headers (without Cookie): {list(receipt_headers.keys())}")
+        logger.debug(f"Request cookies: {cookies}")
+        logger.debug(f"Timeout set to: 30 seconds")
+        
+        start_time = time.time()
         response = session.get(
             url,
             headers=receipt_headers,
@@ -193,12 +237,22 @@ def fetch_telebirr_receipt(reference_number: str) -> Optional[str]:
             allow_redirects=True,
             verify=True  # SSL verification
         )
+        elapsed_time = time.time() - start_time
+        
+        logger.info(f"Response received in {elapsed_time:.2f} seconds")
+        logger.info(f"Response status code: {response.status_code}")
+        logger.debug(f"Response headers: {dict(response.headers)}")
+        logger.debug(f"Response URL (after redirects): {response.url}")
+        logger.debug(f"Response cookies: {dict(session.cookies)}")
         
         # Handle 304 Not Modified - this means we need to make request without If-None-Match
         if response.status_code == 304:
+            logger.warning("Received 304 Not Modified - retrying without If-None-Match header")
             # Remove If-None-Match and try again
             receipt_headers_no_cache = receipt_headers.copy()
             receipt_headers_no_cache.pop('If-None-Match', None)
+            
+            start_time = time.time()
             response = session.get(
                 url,
                 headers=receipt_headers_no_cache,
@@ -207,26 +261,77 @@ def fetch_telebirr_receipt(reference_number: str) -> Optional[str]:
                 allow_redirects=True,
                 verify=True
             )
+            elapsed_time = time.time() - start_time
+            logger.info(f"Retry response received in {elapsed_time:.2f} seconds")
+            logger.info(f"Retry response status code: {response.status_code}")
         
         response.raise_for_status()
+        logger.info(f"Successfully fetched receipt HTML (length: {len(response.text)} characters)")
         return response.text
-    except requests.exceptions.Timeout:
+    except requests.exceptions.Timeout as e:
         error_msg = f"Connection timeout for {reference_number} - Server may be blocking requests from this IP"
         logger.error(error_msg)
+        logger.error(f"Timeout exception details: {type(e).__name__}: {str(e)}")
+        logger.error(f"Timeout occurred after 30 seconds - connection was not established")
+        logger.debug(f"Full exception: {repr(e)}")
+        print(error_msg)
+        return None
+    except requests.exceptions.ConnectTimeout as e:
+        error_msg = f"Connection timeout (connect) for {reference_number} - Could not establish connection to server"
+        logger.error(error_msg)
+        logger.error(f"ConnectTimeout exception details: {type(e).__name__}: {str(e)}")
+        logger.error(f"Failed to connect to {url}")
+        logger.debug(f"Full exception: {repr(e)}")
+        print(error_msg)
+        return None
+    except requests.exceptions.ReadTimeout as e:
+        error_msg = f"Read timeout for {reference_number} - Server connected but did not respond in time"
+        logger.error(error_msg)
+        logger.error(f"ReadTimeout exception details: {type(e).__name__}: {str(e)}")
+        logger.error(f"Server connected but response took longer than 30 seconds")
+        logger.debug(f"Full exception: {repr(e)}")
         print(error_msg)
         return None
     except requests.exceptions.ConnectionError as e:
         error_msg = f"Connection error for {reference_number}: {e} - Server may be blocking requests from this IP"
         logger.error(error_msg)
+        logger.error(f"ConnectionError exception details: {type(e).__name__}: {str(e)}")
+        logger.error(f"Failed to establish connection to {url}")
+        logger.debug(f"Full exception: {repr(e)}")
+        if hasattr(e, 'request'):
+            logger.debug(f"Failed request URL: {e.request.url if e.request else 'N/A'}")
+        print(error_msg)
+        return None
+    except requests.exceptions.SSLError as e:
+        error_msg = f"SSL error for {reference_number}: {e}"
+        logger.error(error_msg)
+        logger.error(f"SSLError exception details: {type(e).__name__}: {str(e)}")
+        logger.debug(f"Full exception: {repr(e)}")
         print(error_msg)
         return None
     except requests.exceptions.RequestException as e:
         error_msg = f"Request error for {reference_number}: {e}"
         logger.error(error_msg)
+        logger.error(f"RequestException type: {type(e).__name__}")
+        logger.error(f"RequestException details: {str(e)}")
+        logger.debug(f"Full exception: {repr(e)}")
+        if hasattr(e, 'response') and e.response is not None:
+            logger.error(f"Response status code: {e.response.status_code}")
+            logger.error(f"Response headers: {dict(e.response.headers)}")
+        print(error_msg)
+        return None
+    except Exception as e:
+        error_msg = f"Unexpected error for {reference_number}: {e}"
+        logger.error(error_msg)
+        logger.error(f"Unexpected exception type: {type(e).__name__}")
+        logger.error(f"Unexpected exception details: {str(e)}")
+        logger.debug(f"Full exception: {repr(e)}", exc_info=True)
         print(error_msg)
         return None
     finally:
+        logger.debug("Closing session")
         session.close()
+        logger.info(f"Completed fetch_telebirr_receipt for reference_number: {reference_number}")
 
 
 def verify_telebirr_transaction(reference_number: str, expected_amount: Optional[Decimal] = None) -> Dict:
