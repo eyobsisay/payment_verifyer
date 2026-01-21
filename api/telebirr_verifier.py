@@ -15,6 +15,8 @@ import re
 import time
 import logging
 
+logger = logging.getLogger(__name__)
+
 
 def parse_telebirr_receipt(html_content: str) -> Dict:
     """Parse telebirr receipt HTML and extract payment information."""
