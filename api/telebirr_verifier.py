@@ -6,6 +6,8 @@ from the Ethio Telecom API and verifying payments.
 """
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from typing import Dict, Optional
 from decimal import Decimal
 from datetime import datetime
@@ -115,13 +117,48 @@ def fetch_telebirr_receipt(reference_number: str) -> Optional[str]:
         'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Mobile/15E148 Safari/604.1'
     }
     
+    # Create a session to maintain cookies
+    session = requests.Session()
+    
+    # Configure retry strategy
+    retry_strategy = Retry(
+        total=3,
+        backoff_factor=1,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["GET"]
+    )
+    adapter = HTTPAdapter(max_retries=retry_strategy)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    
+    # Set cookies that might be needed (from browser request)
+    # These cookies help establish a session
+    cookies = {
+        '_ga': 'GA1.1.794892390.1768474307',
+        '_ga_FPL0B27EZN': 'GS2.1.s1768474306$o1$g0$t1768474310$j56$l0$h0',
+        '_ga_X7ZZ4B8L6Q': 'GS2.1.s1768474307$o1$g0$t1768474310$j57$l0$h297025115'
+    }
+    
     try:
-        response = requests.get(url, headers=headers, timeout=100)
+        # First, try to access the main page to establish session (optional)
+        # This helps get initial cookies if needed
+        try:
+            session.get('https://transactioninfo.ethiotelecom.et/', headers=headers, cookies=cookies, timeout=30)
+        except:
+            pass  # Ignore errors on initial request
+        
+        # Now fetch the receipt with session cookies
+        response = session.get(url, headers=headers, cookies=cookies, timeout=30)
         response.raise_for_status()
         return response.text
+    except requests.exceptions.Timeout:
+        print(f"Error fetching telebirr receipt: Connection timeout for {reference_number}")
+        return None
     except requests.exceptions.RequestException as e:
         print(f"Error fetching telebirr receipt: {e}")
         return None
+    finally:
+        session.close()
 
 
 def verify_telebirr_transaction(reference_number: str, expected_amount: Optional[Decimal] = None) -> Dict:
