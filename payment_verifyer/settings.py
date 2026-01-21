@@ -25,7 +25,7 @@ SECRET_KEY = 'django-insecure-xqspx)9n#qfxw4^irwm2bf-h=682ac8ev3a%xkl(_a(pr+v5%2
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = ['paymentapi.koshkoshe.com']
 
 
 # Application definition
