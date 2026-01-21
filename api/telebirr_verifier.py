@@ -12,6 +12,8 @@ from typing import Dict, Optional
 from decimal import Decimal
 from datetime import datetime
 import re
+import time
+import logging
 
 
 def parse_telebirr_receipt(html_content: str) -> Dict:
@@ -101,38 +103,41 @@ def fetch_telebirr_receipt(reference_number: str) -> Optional[str]:
     """Fetch telebirr receipt HTML from Ethio Telecom API."""
     url = f"https://transactioninfo.ethiotelecom.et/receipt/{reference_number}"
     
-    # Browser-like headers to avoid blocking
+    # Browser-like headers - matching exact working browser request (Chrome on Windows)
     headers = {
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
         'Accept-Encoding': 'gzip, deflate, br, zstd',
         'Accept-Language': 'en-US,en;q=0.9',
         'Cache-Control': 'max-age=0',
         'Connection': 'keep-alive',
-        'Host': 'transactioninfo.ethiotelecom.et',
+        'Sec-CH-UA': '"Google Chrome";v="143", "Chromium";v="143", "Not A(Brand";v="24"',
+        'Sec-CH-UA-Mobile': '?0',
+        'Sec-CH-UA-Platform': '"Windows"',
         'Sec-Fetch-Dest': 'document',
         'Sec-Fetch-Mode': 'navigate',
         'Sec-Fetch-Site': 'none',
         'Sec-Fetch-User': '?1',
         'Upgrade-Insecure-Requests': '1',
-        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Mobile/15E148 Safari/604.1'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36'
     }
     
     # Create a session to maintain cookies
     session = requests.Session()
     
-    # Configure retry strategy
+    # Configure retry strategy - but don't retry on timeout, just fail fast
     retry_strategy = Retry(
-        total=3,
-        backoff_factor=1,
+        total=2,
+        backoff_factor=0.5,
         status_forcelist=[429, 500, 502, 503, 504],
-        allowed_methods=["GET"]
+        allowed_methods=["GET"],
+        connect=1,  # Only retry connection errors once
+        read=1
     )
-    adapter = HTTPAdapter(max_retries=retry_strategy)
+    adapter = HTTPAdapter(max_retries=retry_strategy, pool_connections=10, pool_maxsize=10)
     session.mount("https://", adapter)
     session.mount("http://", adapter)
     
     # Set cookies that might be needed (from browser request)
-    # These cookies help establish a session
     cookies = {
         '_ga': 'GA1.1.794892390.1768474307',
         '_ga_FPL0B27EZN': 'GS2.1.s1768474306$o1$g0$t1768474310$j56$l0$h0',
@@ -140,22 +145,71 @@ def fetch_telebirr_receipt(reference_number: str) -> Optional[str]:
     }
     
     try:
-        # First, try to access the main page to establish session (optional)
-        # This helps get initial cookies if needed
+        # First, visit the main page to establish session and get any required cookies
+        # This mimics browser behavior - visiting homepage first
         try:
-            session.get('https://transactioninfo.ethiotelecom.et/', headers=headers, cookies=cookies, timeout=30)
-        except:
-            pass  # Ignore errors on initial request
+            main_page_headers = headers.copy()
+            main_response = session.get(
+                'https://transactioninfo.ethiotelecom.et/',
+                headers=main_page_headers,
+                cookies=cookies,
+                timeout=15,
+                allow_redirects=True
+            )
+            # Update cookies from response if any new ones are set
+            session.cookies.update(main_response.cookies)
+            # Store ETag if provided for future requests
+            etag = main_response.headers.get('ETag')
+        except Exception as e:
+            logger.warning(f"Could not establish session on main page: {e}")
+            etag = None
+        
+        # Small delay to mimic human behavior
+        time.sleep(0.5)
         
         # Now fetch the receipt with session cookies
-        response = session.get(url, headers=headers, cookies=cookies, timeout=30)
+        receipt_headers = headers.copy()
+        # Add If-None-Match header if we have an ETag from previous request
+        if etag:
+            receipt_headers['If-None-Match'] = etag
+        
+        response = session.get(
+            url,
+            headers=receipt_headers,
+            cookies=session.cookies if session.cookies else cookies,
+            timeout=20,
+            allow_redirects=True
+        )
+        
+        # Handle 304 Not Modified response (cached content)
+        if response.status_code == 304:
+            # For 304, we need to use cached content or make another request without If-None-Match
+            receipt_headers_no_cache = receipt_headers.copy()
+            receipt_headers_no_cache.pop('If-None-Match', None)
+            response = session.get(
+                url,
+                headers=receipt_headers_no_cache,
+                cookies=session.cookies if session.cookies else cookies,
+                timeout=20,
+                allow_redirects=True
+            )
+        
         response.raise_for_status()
         return response.text
     except requests.exceptions.Timeout:
-        print(f"Error fetching telebirr receipt: Connection timeout for {reference_number}")
+        error_msg = f"Connection timeout for {reference_number} - Server may be blocking requests from this IP"
+        logger.error(error_msg)
+        print(error_msg)
+        return None
+    except requests.exceptions.ConnectionError as e:
+        error_msg = f"Connection error for {reference_number}: {e} - Server may be blocking requests from this IP"
+        logger.error(error_msg)
+        print(error_msg)
         return None
     except requests.exceptions.RequestException as e:
-        print(f"Error fetching telebirr receipt: {e}")
+        error_msg = f"Request error for {reference_number}: {e}"
+        logger.error(error_msg)
+        print(error_msg)
         return None
     finally:
         session.close()
