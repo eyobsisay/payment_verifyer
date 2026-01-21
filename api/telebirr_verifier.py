@@ -8,14 +8,41 @@ from the Ethio Telecom API and verifying payments.
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+import urllib3
 from typing import Dict, Optional
 from decimal import Decimal
 from datetime import datetime
 import re
 import time
 import logging
+import os
 
-logger = logging.getLogger(__name__)
+# Configure logger to write to payment.log file
+logger = logging.getLogger('payment_verifyer')
+logger.setLevel(logging.DEBUG)
+
+# Create logs directory if it doesn't exist
+log_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'logs')
+os.makedirs(log_dir, exist_ok=True)
+
+# File handler for payment.log
+log_file = os.path.join(log_dir, 'payment.log')
+file_handler = logging.FileHandler(log_file)
+file_handler.setLevel(logging.DEBUG)
+
+# Console handler (optional - for development)
+console_handler = logging.StreamHandler()
+console_handler.setLevel(logging.INFO)
+
+# Formatter
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+file_handler.setFormatter(formatter)
+console_handler.setFormatter(formatter)
+
+# Add handlers to logger (only if not already added)
+if not logger.handlers:
+    logger.addHandler(file_handler)
+    logger.addHandler(console_handler)
 
 
 def parse_telebirr_receipt(html_content: str) -> Dict:
@@ -105,13 +132,16 @@ def fetch_telebirr_receipt(reference_number: str) -> Optional[str]:
     """Fetch telebirr receipt HTML from Ethio Telecom API."""
     url = f"https://transactioninfo.ethiotelecom.et/receipt/{reference_number}"
     
-    # Browser-like headers - matching exact working browser request (Chrome on Windows)
+    # Browser-like headers - matching EXACT working browser request (Chrome on Windows)
+    # Order matters - matching browser header order as closely as possible
     headers = {
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
         'Accept-Encoding': 'gzip, deflate, br, zstd',
         'Accept-Language': 'en-US,en;q=0.9',
         'Cache-Control': 'max-age=0',
         'Connection': 'keep-alive',
+        'Cookie': '_ga=GA1.1.794892390.1768474307; _ga_FPL0B27EZN=GS2.1.s1768474306$o1$g0$t1768474310$j56$l0$h0; _ga_X7ZZ4B8L6Q=GS2.1.s1768474307$o1$g0$t1768474310$j57$l0$h297025115',
+        'Host': 'transactioninfo.ethiotelecom.et',
         'Sec-CH-UA': '"Google Chrome";v="143", "Chromium";v="143", "Not A(Brand";v="24"',
         'Sec-CH-UA-Mobile': '?0',
         'Sec-CH-UA-Platform': '"Windows"',
@@ -123,23 +153,26 @@ def fetch_telebirr_receipt(reference_number: str) -> Optional[str]:
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36'
     }
     
-    # Create a session to maintain cookies
+    # Create a session to maintain cookies and connection
     session = requests.Session()
     
-    # Configure retry strategy - but don't retry on timeout, just fail fast
+    # Disable SSL verification warnings (optional, but helps with some servers)
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    
+    # Configure retry strategy
     retry_strategy = Retry(
         total=2,
         backoff_factor=0.5,
         status_forcelist=[429, 500, 502, 503, 504],
         allowed_methods=["GET"],
-        connect=1,  # Only retry connection errors once
+        connect=1,
         read=1
     )
     adapter = HTTPAdapter(max_retries=retry_strategy, pool_connections=10, pool_maxsize=10)
     session.mount("https://", adapter)
     session.mount("http://", adapter)
     
-    # Set cookies that might be needed (from browser request)
+    # Set cookies separately (requests library handles Cookie header automatically)
     cookies = {
         '_ga': 'GA1.1.794892390.1768474307',
         '_ga_FPL0B27EZN': 'GS2.1.s1768474306$o1$g0$t1768474310$j56$l0$h0',
@@ -147,53 +180,32 @@ def fetch_telebirr_receipt(reference_number: str) -> Optional[str]:
     }
     
     try:
-        # First, visit the main page to establish session and get any required cookies
-        # This mimics browser behavior - visiting homepage first
-        try:
-            main_page_headers = headers.copy()
-            main_response = session.get(
-                'https://transactioninfo.ethiotelecom.et/',
-                headers=main_page_headers,
-                cookies=cookies,
-                timeout=15,
-                allow_redirects=True
-            )
-            # Update cookies from response if any new ones are set
-            session.cookies.update(main_response.cookies)
-            # Store ETag if provided for future requests
-            etag = main_response.headers.get('ETag')
-        except Exception as e:
-            logger.warning(f"Could not establish session on main page: {e}")
-            etag = None
-        
-        # Small delay to mimic human behavior
-        time.sleep(0.5)
-        
-        # Now fetch the receipt with session cookies
+        # First request - get the receipt and ETag
+        # Don't include If-None-Match on first request
         receipt_headers = headers.copy()
-        # Add If-None-Match header if we have an ETag from previous request
-        if etag:
-            receipt_headers['If-None-Match'] = etag
+        receipt_headers.pop('Cookie', None)  # Remove Cookie from headers, use cookies parameter instead
         
         response = session.get(
             url,
             headers=receipt_headers,
-            cookies=session.cookies if session.cookies else cookies,
-            timeout=20,
-            allow_redirects=True
+            cookies=cookies,
+            timeout=30,
+            allow_redirects=True,
+            verify=True  # SSL verification
         )
         
-        # Handle 304 Not Modified response (cached content)
+        # Handle 304 Not Modified - this means we need to make request without If-None-Match
         if response.status_code == 304:
-            # For 304, we need to use cached content or make another request without If-None-Match
+            # Remove If-None-Match and try again
             receipt_headers_no_cache = receipt_headers.copy()
             receipt_headers_no_cache.pop('If-None-Match', None)
             response = session.get(
                 url,
                 headers=receipt_headers_no_cache,
                 cookies=session.cookies if session.cookies else cookies,
-                timeout=20,
-                allow_redirects=True
+                timeout=30,
+                allow_redirects=True,
+                verify=True
             )
         
         response.raise_for_status()
